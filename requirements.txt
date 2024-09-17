@@ -1,4 +1,4 @@
 pypinyin>=0.50.0
-PlexAPI~=4.15.13
+PlexAPI>=4.15.16
 PyYAML
 requests
