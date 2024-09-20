@@ -2,15 +2,19 @@ import argparse
 import difflib
 import math
 import time
-
-import yaml
-from lxml import html
-import httpx
-import asyncio
-from plexapi.myplex import PlexServer
+import re
 import logging
 import sqlite3
+import asyncio
+from token import NUMBER
+
+import yaml
+import httpx
+from lxml import html
 from colorama import Fore
+from pypinyin import pinyin
+from plexapi.myplex import PlexServer
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,8 +29,35 @@ HEADERS = {
 
 
 def remove_punctuation(text):
-    translator = str.maketrans('', '', ' !()-[]{};:\'\",<>./?@#$%^&*_~‧！，。：；”“’‘\\？《》~·-——=+、|{}【】\xa0')
-    return str(text).strip().translate(translator).strip()
+    """
+    不会处理 : 和 ：
+    :param text:
+    :return:
+    """
+    text = str(text).strip().replace(' ', '：').replace(":", "：")
+    translator = str.maketrans('', '', ' !()-[]{};\'\",<>./?@#$%^&*_~‧！，。；”“’‘\\？《》~·-——=+、|{}【】\xa0')
+    return text.translate(translator).strip()
+
+
+def split_movie_name(movie_name):
+    parts = movie_name.split("：")
+
+    if len(parts) == 2:
+        main_title = parts[0]
+        part_title = parts[1]
+    else:
+        main_title = movie_name
+        part_title = ''
+
+    # 处理结尾数字的情况
+    match = re.search(r'(\D+)(\d+)$', main_title)
+    if match:
+        main_title = match.group(1)
+        part_index = match.group(2)
+    else:
+        part_index = ''
+
+    return main_title, part_index, part_title
 
 
 def loadconfig():
@@ -282,79 +313,138 @@ def main(baseurl: str, token: str, playlist_id='top250', renew=False):
         temp_index = None
         temp_media = None
         temp_ratio = 0
-        temp_deviation = 999
+        massage = ''
 
         for index, media in enumerate(medias):
-
             try:
-                year_deviation = abs(int(item[3]) - int(media[3]))
-                # 首先排除年份差距超过 2 年的
-                if year_deviation > 2:
-                    continue
+                list_movie, list_year = remove_punctuation(item[1]), item[3]
+                plex_movie, plex_year = remove_punctuation(media[1]), media[3]
+
+                list_title, list_index, list_part = split_movie_name(list_movie)
+                plex_title, plex_index, plex_part = split_movie_name(plex_movie)
+                year_deviation = abs(int(list_year) - int(plex_year))
+
+            # 1. 跳过无法提取信息的
             except Exception as e:
                 logging.debug(e)
                 continue
 
-            # top_title = f'{remove_punctuation(item[1])} ({item[3]})'
-            # media_title = f'{remove_punctuation(media[1])} ({media[3]})'
+            # 2. 跳过上映年份差距大于2年的
+            if year_deviation > 2:
+                continue
+            # 3. 跳过有集数但集数不同的情况
+            elif list_index != plex_index and list_index and plex_index:
+                continue
+            # 4. 跳过名称长度不一致的情况
+            elif len(list_title) != len(plex_title):
+                continue
+            # # 4. 跳过名称第一个字拼音不一样的情况
+            # elif pinyin(list_title[0]) != pinyin(plex_title[0]):
+            #     continue
+            else:
+                pass
 
-            top_title = remove_punctuation(item[1]) + item[3]
-            media_title = remove_punctuation(media[1]) + media[3]
+            list_fillstring = list_movie.replace('：', '') + '*' * (11 - len(list_movie)) + list_year
+            plex_fillstring = plex_movie.replace('：', '') + '*' * (11 - len(plex_movie)) + plex_year
 
-            top_fill = '*' * (15-len(top_title))
-            media_fill = '*' * (15 - len(media_title))
-            ratio = difflib.SequenceMatcher(None, top_title+top_fill, media_title+media_fill).quick_ratio()
+            ratio = difflib.SequenceMatcher(None, list_fillstring, plex_fillstring).quick_ratio()
 
-            # 等于 1 或名称完全相同，但年代误差小于 2 ，视为匹配，并结束查询
+            # 1. 相似度 = 1 视为完全匹配，结束查询
             if ratio == 1:
                 temp_index, temp_media, temp_ratio, temp_deviation = index, media[0], ratio, year_deviation
+                massage = '精准匹配'
                 break
-
-            # 大于 0.8 视为模糊匹配，并试图寻找下一个更相似的匹配
-            if ratio >= 0.8 and ratio > temp_ratio and year_deviation <= 2 and top_title[0] == media_title[0]:
+            # 2. 名称完全相同，年份完全相同的，视为完全匹配，结束查询
+            #    即忽略副标题不同，或片名没有写第几部的情况
+            if list_title == plex_title and list_year == plex_year:
                 temp_index, temp_media, temp_ratio, temp_deviation = index, media[0], ratio, year_deviation
-                # logging.info(f'  \t{Fore.MAGENTA}可能的匹配：{top_title} 与 {media_title} 相似度 {ratio}{Fore.RESET}')
+                if list_part != plex_part and list_index == plex_index:
+                    massage = '分集名称不同'
+                elif list_part == plex_part and list_index != plex_index:
+                    massage = '集数不同'
+                else:
+                    massage = '集数与分集名称都不同'
+                break
+            # 3. 相似度 > 0.8 ，名称拼音完全相同，年份完全相同的，视为完全匹配，结束查询
+            #    即忽略标题简繁不一、副标题不同，或片名没有写第几部的情况，
+            if ratio > 0.8 and pinyin(list_title) == pinyin(plex_title) and list_year == plex_year:
+                temp_index, temp_media, temp_ratio, temp_deviation = index, media[0], ratio, year_deviation
+                if list_part == plex_part and list_index == plex_index:
+                    massage = '简繁不一致'
+                elif list_part != plex_part and list_index == plex_index:
+                    massage = '简繁不一致且分集名称不同'
+                elif list_part == plex_part and list_index != plex_index:
+                    massage = '简繁不一致且集数不同'
+                else:
+                    massage = '简繁不一致且集数和分集名称都不同'
+                break
+            # 4. 相似度 > 0.8 ，视为模糊匹配，并试图寻找下一个更相似的匹配
+            if ratio > 0.8 and ratio > temp_ratio:
+                temp_index, temp_media, temp_ratio, temp_deviation = index, media[0], ratio, year_deviation
+                numtrans = str.maketrans('123456789', '一二三四五六七八九')
 
-        # 完全相同，视为精准匹配
-        if temp_media and temp_ratio == 1.0:
-            logging.info(f'{Fore.GREEN}{item[0]}\t{item[1]}({item[3]}) 精准匹配成功。{Fore.RESET}')
+                # a. 如果电影名完全相同，集数也相同，上映年份相差不到两年
+                #    即忽略分集标题差异，忽略上映年份的小差异
+                if list_title == plex_title and list_index == plex_index:
+                    if list_part == plex_part:
+                        massage = '上映年份不同'
+                    else:
+                        massage = '上映年份和分集名称都不同'
+
+                # a. 如果电影名完全除了阿拉伯数字之外相同，集数也相同，上映年份相差不到两年
+                #    即忽略分集标题差异，忽略上映年份的小差异
+                if list_title.translate(numtrans) == plex_title.translate(numtrans) and list_index == plex_index:
+                    massage = '名称中存在阿拉伯数字'
+
+        def gen_log_msg():
+
+            _item_print = f'{item[0]}\t{item[1]}({item[3]})'
+
+            if not temp_media:
+                return f'{Fore.RED}{_item_print} 不存在。{Fore.RESET}'
+
+            _plex_print = f'{temp_media.title}({temp_media.year})'
+
+            if massage == '精准匹配':
+                return f'{Fore.GREEN}{_item_print} 精准匹配。{Fore.RESET}'
+            elif massage:
+                return (f'{Fore.CYAN}{_item_print} 与 {_plex_print} 模糊匹配(相似度{round(temp_ratio, 2)})，'
+                        f'存在问题：{massage}。{Fore.RESET}')
+            else:
+                return (f'{Fore.RED}{_item_print} 与 {_plex_print} 模糊匹配(相似度{round(temp_ratio, 2)})，'
+                        f'但未命中匹配规则，不会加入列表中。{Fore.RESET}')
+
+        # 完全相同
+        if temp_media and temp_ratio == 1.0 and massage:
+            logging.info(gen_log_msg())
             playlist_media_items.append(temp_media)
             medias.pop(temp_index)
-        # 名称相同但上映年份差不超过2，视为模糊匹配
-        elif temp_media and item[1] == temp_media.title and temp_deviation <= 2:
-            logging.error(f'{Fore.YELLOW}{item[0]}\t{item[1]}({item[3]}) 模糊匹配为 '
-                          f'{temp_media.title}({temp_media.year}) ，相似度 {temp_ratio} {Fore.RESET}')
+        # 模糊匹配
+        elif temp_media and massage:
+            logging.error(gen_log_msg())
             playlist_media_items.append(temp_media)
             medias.pop(temp_index)
-        # 名称相似度大于0.8，且上映年份差为0，视为模糊匹配
-        elif temp_media and temp_ratio >= 0.8 and temp_deviation == 0:
-            logging.error(f'{Fore.YELLOW}{item[0]}\t{item[1]}({item[3]}) 模糊匹配为 '
-                          f'{temp_media.title}({temp_media.year}) ，相似度 {temp_ratio} {Fore.RESET}')
-            playlist_media_items.append(temp_media)
-            medias.pop(temp_index)
-        # 名称相似度大于0.9，上映年份差不大于1，但名称长度相同的，视为模糊匹配
-        elif temp_media and temp_ratio >= 0.9 and len(item[1]) == len(temp_media.title):
-            logging.error(f'{Fore.YELLOW}{item[0]}\t{item[1]}({item[3]}) 模糊匹配为 '
-                          f'{temp_media.title}({temp_media.year}) ，相似度 {temp_ratio} {Fore.RESET}')
-            playlist_media_items.append(temp_media)
-            medias.pop(temp_index)
-        elif not temp_media:
-            logging.error(f'{Fore.RED}{item[0]}\t{item[1]}({item[3]}) 在库中不存在。{Fore.RESET}')
+        # 模糊匹配不入列
+        elif temp_media and not massage:
+            logging.error(gen_log_msg())
+        # 无匹配
         else:
-            logging.error(f'{Fore.RED}{item[0]}\t可能的匹配(不会加入列表)：{item[1]}({item[3]}) 与 '
-                          f'{temp_media.title}({temp_media.year}) 相似度 {temp_ratio} {Fore.RESET}')
+            logging.error(gen_log_msg())
 
     if playlist_media_items:
         client.createPlaylist(title=playlist_name, items=playlist_media_items)
-        logging.warning(f'{Fore.CYAN}共计匹配到 {len(playlist_media_items)} 个项目。{Fore.RESET}')
+        logging.warning(f'{Fore.CYAN}共计匹配到 {len(playlist_media_items)}/{len(douban_playlist)} 个项目。{Fore.RESET}')
     else:
         logging.error('没有匹配到该列表中的任何电影。')
 
 
 if __name__ == '__main__':
     Config = loadconfig()
-    for playlist_id in Config.playlist:
-        main(Config.baseurl, Config.token, playlist_id)
-        time.sleep(2)
+    Renew = False
+    for playlistid in Config.playlist:
+        main(Config.baseurl, Config.token, playlistid, Renew)
+        if Renew:
+            time.sleep(5)
+        else:
+            time.sleep(0.5)
         print('\n\n\n')
-        time.sleep(2)
