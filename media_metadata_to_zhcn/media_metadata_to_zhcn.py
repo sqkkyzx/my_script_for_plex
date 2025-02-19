@@ -35,7 +35,7 @@ plexapi_reload_options = {
 }
 
 
-def loadtags(source):
+def load_tags(source):
     if source.startswith('http://') or source.startswith('https://'):
         # 如果是 URL，使用 requests 获取内容
         response = requests.get(source)
@@ -51,7 +51,7 @@ def loadtags(source):
             return yaml.safe_load(file)
 
 
-def loadconfig():
+def load_config():
     def load_allow_libs(yaml_file_path):
         try:
             with open(yaml_file_path, 'r', encoding='utf-8') as file:
@@ -86,16 +86,16 @@ def loadconfig():
             with open(yaml_file_path, 'r', encoding='utf-8') as file:
                 data = yaml.safe_load(file)
 
-                class _cfg:
+                class Cfg:
                     configfile = yaml_file_path
                     baseurl = data['auth']['baseurl']
                     token = data['auth']['token']
-                    daysago = data['daysAgo']
-                    sorttitle = data['sortTitle']
-                    transtags = data['transTags']
-                    tagsfile = data['tagsFile']
+                    days_ago = data['daysAgo']
+                    sort_title = data['sortTitle']
+                    trans_tags = data['transTags']
+                    tags_file = data['tagsFile']
 
-                return _cfg
+                return Cfg
         except Exception as e:
             logging.debug(e)
             return False
@@ -106,22 +106,22 @@ def loadconfig():
         parser.add_argument('--baseurl', default="", type=str, required=False,
                             help="Plex 地址，例如 http://127.0.0.1:32400")
         parser.add_argument('--token', default="", type=str, required=False, help="Plex Token")
-        parser.add_argument('--daysago', default=0, type=int, required=False, help="仅搜索多少天前的媒体，0为不限制")
-        parser.add_argument('--sorttitle', default=True, type=bool, required=False, help="开启标题排序")
-        parser.add_argument('--transtags', default=True, type=bool, required=False, help="开启标签翻译")
-        parser.add_argument('--tagsfile', default="https://mirror.ghproxy.com/raw.githubusercontent.com/sqkkyzx/plex_localization_zhcn/main/tags.yaml", type=str, required=False, help="配置文件路径")
+        parser.add_argument('--daysAgo', default=0, type=int, required=False, help="仅搜索多少天前的媒体，0为不限制")
+        parser.add_argument('--sortTitle', default=True, type=bool, required=False, help="开启标题排序")
+        parser.add_argument('--transTags', default=True, type=bool, required=False, help="开启标签翻译")
+        parser.add_argument('--tagsFile', default="https://mirror.ghproxy.com/raw.githubusercontent.com/sqkkyzx/plex_localization_zhcn/main/tags.yaml", type=str, required=False, help="标签翻译文件路径")
         args = parser.parse_args()
 
-        class _cfg:
+        class Cfg:
             configfile = args.configfile
             baseurl = args.baseurl
             token = args.token
-            daysago = args.daysago
-            sorttitle = args.sorttitle
-            transtags = args.transtags
-            tagsfile = args.tagsfile
+            days_ago = args.daysAgo
+            sort_title = args.sortTitle
+            trans_tags = args.transTags
+            tags_file = args.tagsFile
 
-        return _cfg
+        return Cfg
 
     args_cfg = load_from_args()
     file_cfg = load_form_file(args_cfg.configfile)
@@ -148,7 +148,7 @@ def convert_sort_to_pinyin(text):
     return pinyin_str.translate(str.maketrans("：（），", ":(),"))
 
 
-def convert_tags_to_zhcn(tags: list[str], transdict: dict):
+def convert_tags_to_chinese(tags: list[str], transdict: dict):
     return list(set(transdict.get(tag, tag) for tag in tags))
 
 
@@ -158,8 +158,8 @@ def list_media(pms_client, allow_libs, days):
     op_medias = []
 
     for library in pms_client.library.sections():
-        allowed_libtypes = allow_libs.get(library.type, [])
-        for libtype in allowed_libtypes:
+        allowed_lib_types = allow_libs.get(library.type, [])
+        for libtype in allowed_lib_types:
             _list = library.search(libtype=libtype, filters=filters)
             op_medias.extend(_list)
 
@@ -179,7 +179,7 @@ def op_sort(media):
         logging.info(f"Set <{media.title}> SortTitle to [{new_sort_title}]")
 
 
-def op_tag(media: plexapi.media, transdict: dict, trans_tagset: set, allow_libs, allow_tags, baseurl, token):
+def op_tag(media: plexapi.media, transdict: dict, trans_tag_set: set, allow_libs, allow_tags, baseurl, token):
     _allow_types = [item for item in chain.from_iterable(allow_libs.values()) if item != 'collection']
     if media.type in _allow_types:
 
@@ -189,8 +189,8 @@ def op_tag(media: plexapi.media, transdict: dict, trans_tagset: set, allow_libs,
 
         for tag_name, tag_name_s in allow_tags.items():
             tags = [tag.get('tag') for tag in metadata.get(tag_name, [])]
-            if tags and any(tag in trans_tagset for tag in tags):
-                new_tags = convert_tags_to_zhcn(tags, transdict)
+            if tags and any(tag in trans_tag_set for tag in tags):
+                new_tags = convert_tags_to_chinese(tags, transdict)
                 media.editTags(tag_name_s, tags, False, True).reload(**plexapi_reload_options)
                 media.editTags(tag_name_s, new_tags, True, False).reload(**plexapi_reload_options)
                 logging.info(F"Translate <{media.title}> {tag_name} {tags} to {new_tags}")
@@ -198,7 +198,7 @@ def op_tag(media: plexapi.media, transdict: dict, trans_tagset: set, allow_libs,
 
 def main(
         baseurl: str, token: str, days: int,
-        sortTitle: bool, transTags: bool,
+        sort_title: bool, trans_tags: bool,
         tag_source: str,
         allow_libs: dict, allow_tags: dict,
 ):
@@ -213,7 +213,7 @@ def main(
     t2 = int(time.time() * 1000)
     logging.info(f'msg="过去 {days} 天内新增了 {len(op_medias)} 个媒体。" duration={(t2 - t1)}ms')
 
-    if sortTitle:
+    if sort_title:
         for op_media in op_medias:
             op_sort(op_media)
         t3 = int(time.time() * 1000)
@@ -221,11 +221,11 @@ def main(
     else:
         t3 = int(time.time() * 1000)
 
-    if transTags:
-        transdict = loadtags(tag_source)
-        transtagset = set(transdict.keys())
+    if trans_tags:
+        transdict = load_tags(tag_source)
+        trans_tag_set = set(transdict.keys())
         for op_media in op_medias:
-            op_tag(op_media, transdict, transtagset, allow_libs, allow_tags, baseurl, token)
+            op_tag(op_media, transdict, trans_tag_set, allow_libs, allow_tags, baseurl, token)
         t4 = int(time.time() * 1000)
         logging.info(f'msg="已设置中文标签。" duration={(t4 - t3)}ms')
     else:
@@ -234,7 +234,7 @@ def main(
     logging.info(f'msg="全部任务已完成。" duration={(t4 - t1)}ms')
 
 
-def removeTagLock(baseurl, token, days, allow_libs, allow_tags):
+def remove_tag_lock(baseurl, token, days, allow_libs, allow_tags):
     client = PlexServer(baseurl, token)
     op_medias = list_media(client, allow_libs, days)
     for op_media in op_medias:
@@ -248,8 +248,8 @@ def removeTagLock(baseurl, token, days, allow_libs, allow_tags):
 
 
 if __name__ == '__main__':
-    Config, AllowLibs, AllowTags = loadconfig()
+    Config, AllowLibs, AllowTags = load_config()
     main(
-        Config.baseurl, Config.token, Config.daysago, Config.sorttitle, Config.transtags, Config.tagsfile,
+        Config.baseurl, Config.token, Config.days_ago, Config.sort_title, Config.trans_tags, Config.tags_file,
         AllowLibs, AllowTags
     )

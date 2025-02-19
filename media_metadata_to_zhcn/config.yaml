@@ -1,3 +1,4 @@
+#file: noinspection SpellCheckingInspection
 # 配置 plex 连接
 auth:
   baseurl: "http://192.168.3.2:32400"
@@ -11,7 +12,7 @@ sortTitle: true
 # 是否开启开启标签翻译功能， true 开启，false 关闭
 transTags: true
 # 读取标签翻译字典的文件路径，可以是一个网址url，也可以是一个本地文件路径
-tagsFile: "https://mirror.ghproxy.com/raw.githubusercontent.com/sqkkyzx/plex_localization_zhcn/main/tags.yaml"
+tagsFile: "https://ghfast.top/raw.githubusercontent.com/sqkkyzx/plex_localization_zhcn/main/tags.yaml"
 
 # 允许操作的库类型，设置 true 允许，false 禁用
 allowLibs:
